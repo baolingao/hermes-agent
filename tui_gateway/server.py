@@ -8678,14 +8678,45 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
-            r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                stdin=subprocess.DEVNULL,
-            )
+            import shlex
+
+            exec_cmd = qc.get("command", "")
+            if not exec_cmd:
+                return _ok(rid, {"type": "exec", "output": ""})
+            try:
+                # Prefer shell=False with shlex.split() to avoid shell
+                # metacharacter injection (CWE-78). Keep shell=True fallback
+                # for shell operators that cannot be represented as argv.
+                use_shell = False
+                try:
+                    cmd_parts = shlex.split(exec_cmd)
+                except ValueError:
+                    use_shell = True
+                    cmd_parts = exec_cmd
+                else:
+                    shell_operators = {"|", ";", "&&", "||", ">", "<", ">>", "&", "$("}
+                    if any(op in exec_cmd for op in shell_operators):
+                        use_shell = True
+
+                if use_shell:
+                    r = subprocess.run(
+                        exec_cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        stdin=subprocess.DEVNULL,
+                    )
+                else:
+                    r = subprocess.run(
+                        cmd_parts,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        stdin=subprocess.DEVNULL,
+                    )
+            except subprocess.TimeoutExpired:
+                return _err(rid, 5002, "quick command timed out (30s)")
             output = (
                 (r.stdout or "")
                 + ("\n" if r.stdout and r.stderr else "")
