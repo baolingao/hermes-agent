@@ -359,12 +359,36 @@ def _install_root() -> Path:
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """Execute bootstrap commands in *cwd*. Raise CatalogError on first failure.
 
-    Each command runs through the shell (so `&&` etc. work). The output is
-    streamed to the user's terminal for visibility.
+    Bootstrap commands originate from MCP catalog manifests shipped with the
+    repo. Each command is split via ``shlex.split()`` and run without a shell
+    (``shell=False``) by default to reduce the attack surface if a manifest
+    were compromised (CWE-78).  Shell operators (``&&``, ``||``, ``|``, etc.)
+    trigger an automatic ``shell=True`` fallback so existing manifests that
+    chain commands continue to work. The output is streamed to the user's
+    terminal for visibility.
     """
+    import shlex
+    import subprocess
+
+    shell_operators = {"&&", "||", "|", ";", ">", "<", ">>", "&", "$("}
     for cmd in commands:
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        try:
+            use_shell = any(op in cmd for op in shell_operators)
+            if not use_shell:
+                try:
+                    cmd_parts = shlex.split(cmd)
+                except ValueError:
+                    use_shell = True
+                    cmd_parts = cmd
+            if use_shell:
+                proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+            else:
+                proc = subprocess.run(cmd_parts, cwd=str(cwd))
+        except Exception as exc:
+            raise CatalogError(
+                f"bootstrap step failed: {exc}"
+            ) from exc
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {cmd}"
